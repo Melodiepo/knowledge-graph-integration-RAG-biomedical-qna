@@ -16,6 +16,7 @@ from typing import List
 import torch
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.docstore.document import Document
+from langchain.prompts import PromptTemplate
 
 # Vector store (Here, we use Chroma for example. Swap to FAISS if you prefer.)
 from langchain_community.vectorstores import Chroma
@@ -92,8 +93,25 @@ documents = [Document(page_content=chunk) for chunk in docs]
 
 logger.info(f"Loaded {len(documents)} documents/chunks from {CORPUS_FILE}.")
 
+# ---------------------
+# 4) Make a custom prompt
+# ---------------------
+
+custom_prompt = PromptTemplate(
+    template="""You are a helpful assistant for biomedical questions.
+Use the following context to answer the question in 2-3 sentences. 
+If you don't know, say "I am not sure" and do not fabricate content.
+
+Context:
+{context}
+
+Question: {question}
+Answer (please be concise yet complete):""",
+    input_variables=["context", "question"]
+)
+
 # -----------------------------------
-# 4) BUILD RETRIEVER (EMBEDDINGS + DB)
+# 5) BUILD RETRIEVER (EMBEDDINGS + DB)
 # -----------------------------------
 logger.info("Loading retriever embedding model...")
 embedding_function = HuggingFaceEmbeddings(
@@ -108,7 +126,7 @@ vectorstore = Chroma.from_documents(documents, embedding_function)
 retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
 
 # -----------------------------
-# 5) LOAD/WRAP GENERATIVE MODEL
+# 6) LOAD/WRAP GENERATIVE MODEL
 # -----------------------------
 logger.info("Loading generator model/pipeline...")
 
@@ -121,6 +139,11 @@ if IS_SEQ2SEQ:
         model=generator_model,
         tokenizer=generator_tokenizer,
         max_length=256,
+        min_length=40,   
+        do_sample=True,
+        top_p=0.9,
+        temperature=0.7,
+        num_beams=3,
         device=-1
     )
     llm = HuggingFacePipeline(pipeline=pipe)
@@ -132,7 +155,11 @@ else:
         "text-generation",
         model=generator_model,
         tokenizer=generator_tokenizer,
-        max_length=256,
+        min_length=40,   
+        do_sample=True,
+        top_p=0.9,
+        temperature=0.7,
+        num_beams=3,
         device=-1
     )
     llm = HuggingFacePipeline(pipeline=pipe)
@@ -141,18 +168,19 @@ else:
 # llm = OpenAI(model_name="gpt-3.5-turbo", temperature=0.0)
 
 # ----------------------
-# 6) BUILD THE RAG CHAIN
+# 7) BUILD THE RAG CHAIN
 # ----------------------
 logger.info("Building RetrievalQA chain...")
 qa_chain = RetrievalQA.from_chain_type(
     llm=llm,
     chain_type="stuff",  # or "refine", "map_reduce"
     retriever=retriever,
+    chain_type_kwargs={"prompt": custom_prompt},
     return_source_documents=True,
 )
 
 # ---------------------------
-# 7) TEST THE PIPELINE (DEMO)
+# 8) TEST THE PIPELINE (DEMO)
 # ---------------------------
 # A sample question. You can replace with your domain-specific query.
 sample_question = "What is BRCA1's role in DNA repair?"
