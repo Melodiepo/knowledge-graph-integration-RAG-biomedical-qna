@@ -1,9 +1,7 @@
 1. Save embeddings and articles into their corresponding folders:
 ex) for pmc embeddings, save PMC_Abs_Embeds.npy, PMC_Main_Embeds.npy in embeddings/pmc. 
 
-2. FAISS indexing is included in `retrieve.py`, so we only need precomputed embeddings for each corpus.
-   2.1 PubMed precomputed embeddings by MedCPT are available [here](https://github.com/ncbi/MedCPT).
-   2.2 The other three corpora require using MedCPT to compute the embeddings ourselves.
+2. FAISS indexing is included in `retrieve.py`, so we only need precomputed embeddings for each corpus.PubMed precomputed embeddings by MedCPT are available [here](https://github.com/ncbi/MedCPT). The other three corpora require using MedCPT to compute the embeddings ourselves.
 
 3. Navigate to the directory where main.py is located.
 
