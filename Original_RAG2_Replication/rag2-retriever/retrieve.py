@@ -73,6 +73,7 @@ def pubmed_decode(pubmed_I_array, pubmed_articles_dir, pubmed_group_num):
     #output_json_path = "PubMed_retrieved.json"
     pubmed_evidences = []
     for start_index in range(0, 38, pubmed_group_num):
+    #for start_index in range(0, 1, pubmed_group_num):
         pubmed_articles = combine_articles(pubmed_articles_dir, start_index, pubmed_group_num)
 
     #pubmed_I_array = np.load(idx_array_savepath)

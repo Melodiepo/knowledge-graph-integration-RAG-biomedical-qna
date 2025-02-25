@@ -72,12 +72,15 @@ def main():
         input_list = qe.query_preprocess_instruction(input_path, use_spacy = use_spacy)
     else:
         with open(input_path, 'r') as input_file:
-            input_list = json.load(input_file)
-        xq = qe.query_encode(input_list)
+            input_list = [json.loads(line) for line in input_file if line.strip()]
+            #input_list = input_list[0:100]
+        questions = [entry["question"] for entry in input_list]
+        xq = qe.query_encode(questions)
 
     # pubmed mips
     pubmed_I_array = []
     for start_index in range(0, 38, pubmed_group_num):
+    #for start_index in range(0, 1, pubmed_group_num):
         pubmed_index = rt.pubmed_index_create(pubmed_embeddings_dir=os.path.join(embeddings_dir, "pubmed"), start_index=start_index, pubmed_group_num=pubmed_group_num)
         pubmed_I_array_temp = []
         splits = [i for i in range(0, len(xq), 1024)]
@@ -95,7 +98,7 @@ def main():
     pubmed_evidences = rt.pubmed_decode(pubmed_I_array, pubmed_articles_dir= os.path.join(articles_dir, "pubmed"), pubmed_group_num=pubmed_group_num)
     print(len(pubmed_evidences), "x", len(pubmed_evidences[0]))
 
-
+    
     # pmc mips
     pmc_index = rt.pmc_index_create(pmc_embeddings_dir = os.path.join(embeddings_dir, "pmc"))
     pmc_I_array = []
@@ -142,9 +145,19 @@ def main():
 
     # decode textbook
     textbook_evidences = rt.textbook_decode(textbook_I_array, textbook_articles_dir = os.path.join(articles_dir, "textbook"))
-
+    
     # rerank evidences from 4 corpora
     query_evidences, evidences = rr.combine_query_evidence(input_list, pubmed_evidences, pmc_evidences, cpg_evidences, textbook_evidences)
+    #query_evidences, evidences = rr.combine_query_evidence(input_list, pubmed_evidences)
+
+    # Filter out empty or mismatched entries
+    valid_data = [(q, e) for q, e in zip(query_evidences, evidences) if len(e) == top_k]
+
+    # Unpack valid data
+    query_evidences, evidences = zip(*valid_data)
+
+    print(f"Filtered queries: {len(query_evidences)}")
+    print(f"Filtered evidences: {len(evidences)}")
 
     # save output of 10 reranked evidences
     reranked_evidences = rr.rerank(query_evidences, evidences, top_k)
@@ -155,8 +168,112 @@ def main():
 #    with open (output_path, 'w') as jsfile:
 #        json.dump(reranked_evidences, jsfile) 
 
-    with open (output_path, 'w') as jsfile:
-        json.dump(reranked_evidences, jsfile) 
+    # Combine queries and reranked evidences into a structured format
+    formatted_reranked_evidences = [
+        {
+            "query": query_evidences[i][0][0],  # Extract the original query
+            "retrieved_docs": reranked_evidences[i]  # List of top-ranked evidence IDs
+        }
+        for i in range(len(reranked_evidences))
+    ]
+
+    # Save in the expected format
+    with open(output_path, 'w') as jsfile:
+        json.dump(formatted_reranked_evidences, jsfile, indent=4)
+
+    #with open (output_path, 'w') as jsfile:
+        #json.dump(reranked_evidences, jsfile) 
 
 if __name__ == "__main__":
     main()
+
+
+
+'''
+
+def main():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('-e', '--embeddings_dir', help='embeddings directory', default='embeddings')
+    parser.add_argument('-a', '--articles_dir', help='articles directory', default='articles')
+    parser.add_argument('-i', '--input_path', help='input file path', default='/retriever/input/medqa/medqa_llama_cot.json')
+    parser.add_argument('-k', '--top_k', help='number of retrieved documents', default=100, type=int)
+    parser.add_argument('-o', '--output_path', help='output file path', default='/retriever/output/medqa/evidence_medqa_llama_cot.json')
+    parser.add_argument('-pmdn', '--pubmed_group_num', help='number of chunks of pubmed to concatenate for each step', default=38, type=int)
+
+    args = parser.parse_args()
+
+    embeddings_dir = args.embeddings_dir
+    articles_dir = args.articles_dir
+    input_path = args.input_path
+    output_path = args.output_path
+    top_k = args.top_k
+    pubmed_group_num = args.pubmed_group_num
+
+    # Load queries from input
+    with open(input_path, 'r') as input_file:
+        input_list = [json.loads(line) for line in input_file if line.strip()]
+        input_list = input_list[0:100]  # Use a subset for faster testing
+
+    # Extract and encode questions
+    questions = [entry.get("question", "") for entry in input_list]
+    print(f"Extracted {len(questions)} questions.")
+    xq = qe.query_encode(questions)
+
+    # Retrieve evidence from PubMed
+    pubmed_I_array = []
+    for start_index in range(0, 1, pubmed_group_num):  # Only process one chunk
+        pubmed_index = rt.pubmed_index_create(
+            pubmed_embeddings_dir=os.path.join(embeddings_dir, "pubmed"),
+            start_index=start_index,
+            pubmed_group_num=pubmed_group_num
+        )
+        pubmed_I_array_temp = []
+        splits = [i for i in range(0, len(xq), 1024)]
+
+        for split_start in tqdm(splits, desc=f"PubMed FAISS MIPS {start_index}:"):
+            D, I = pubmed_index.search(xq[split_start:split_start+1024], top_k)
+            pubmed_I_array_temp.extend(I)
+
+        pubmed_I_array.append(pubmed_I_array_temp)
+        del pubmed_index
+    print(f"{len(pubmed_I_array)} x {len(pubmed_I_array[0])} evidence indices retrieved.")
+
+    # Decode PubMed evidence
+    pubmed_evidences = rt.pubmed_decode(
+        pubmed_I_array,
+        pubmed_articles_dir=os.path.join(articles_dir, "pubmed"),
+        pubmed_group_num=pubmed_group_num
+    )
+    print(f"Decoded evidences: {len(pubmed_evidences)} x {len(pubmed_evidences[0])}")
+
+    # Combine queries with their corresponding evidences
+    query_evidences, evidences = rr.combine_query_evidence(questions, pubmed_evidences)
+
+    # Filter valid entries
+    valid_data = [(q, e) for q, e in zip(query_evidences, evidences) if len(q) > 0 and len(e) == top_k]
+    query_evidences, evidences = zip(*valid_data) if valid_data else ([], [])
+
+    print(f"Filtered queries: {len(query_evidences)}")
+    print(f"Filtered evidences: {len(evidences)}")
+
+    # Rerank and save the output
+    reranked_evidences = rr.rerank(query_evidences, evidences, top_k)
+
+    # Combine queries and reranked evidences into a structured format
+    formatted_reranked_evidences = [
+        {
+            "query": query_evidences[i][0][0],  # Extract the original query
+            "retrieved_docs": reranked_evidences[i]  # List of top-ranked evidence IDs
+        }
+        for i in range(len(reranked_evidences))
+    ]
+
+    # Save in the expected format
+    with open(output_path, 'w') as jsfile:
+        json.dump(formatted_reranked_evidences, jsfile, indent=4)
+
+
+if __name__ == "__main__":
+    main()
+'''
