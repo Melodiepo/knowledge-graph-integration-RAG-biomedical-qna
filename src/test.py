@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL_NAME = "ncbi/MedCPT-Query-Encoder"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME).to(DEVICE)
+model = AutoModel.from_pretrained(MODEL_NAME).to(DEVICE)
 
 
 def json_loader(filepath):
