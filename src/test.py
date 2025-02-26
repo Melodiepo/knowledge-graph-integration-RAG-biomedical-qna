@@ -1,9 +1,7 @@
 import json
-import requests
 import torch
-from transformers import AutoModel, AutoTokenizer, AutoModelForSequenceClassification
+from transformers import AutoModel, AutoTokenizer
 import context_pruning
-from bs4 import BeautifulSoup
 
 # Load the model globally (avoid reloading in functions)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -19,14 +17,10 @@ def json_loader(filepath):
 
 
 def fetch_pubmed_abstract(pmid):
-    """ Fetch abstract from PubMed using scraping"""
-    # TODO: Use metadata instead of scraping
-    url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    abstract_section = soup.find("div", class_="abstract-content")
-    return abstract_section.text.strip() if abstract_section else "No abstract found"
+    """ Fetch abstract from local PubMed json file"""
+    with open(f"pubmed_chunk_36.json", "r") as file:
+        data = json.load(file)
+        return data[pmid]["a"]
 
 
 def encode_query(query):
