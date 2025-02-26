@@ -1,10 +1,42 @@
 import os
 import json
 import numpy as np
+import torch
 from sentence_transformers.models import Transformer, Pooling
 from sentence_transformers import SentenceTransformer
 import tqdm
 from sklearn.metrics.pairwise import cosine_similarity
+
+
+def similarity_check(query, retrieved_texts, retrieved_pmids,
+                     context_sim_threshold=75, context_sim_min_threshold=0.5):
+    """
+    Computes cosine similarity between a query and retrieved documents.
+    Args:
+        query: query embedding
+        retrieved_texts: list of retrieved texts embeddings
+        context_sim_threshold (float): Percentile threshold for pruning.
+        context_sim_min_threshold (float): Minimum similarity threshold.
+
+    Returns:
+        pruned_contexts: list of most relevant document snippets
+    """
+    # Compute cosine similarity
+    similarities = [
+        cosine_similarity(np.array(query).reshape(1, -1), np.array(snippet_embedding).reshape(1, -1))[0][0]
+        for snippet_embedding in retrieved_texts
+    ]
+
+    # Compute percentile-based threshold for filtering
+    percentile_threshold = np.percentile(similarities, context_sim_threshold)
+
+    # Select snippets above threshold
+    pruned_pmids = [
+        pmid for i, pmid in enumerate(retrieved_pmids)
+        if similarities[i] > percentile_threshold and similarities[i] > context_sim_min_threshold
+    ]
+
+    return pruned_pmids
 
 
 def retrieve_and_prune_context(question, index, metadatas,
@@ -29,10 +61,10 @@ def retrieve_and_prune_context(question, index, metadatas,
 
     # Step 1: Load embedding model
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    # todo embeedding function is not clearly defined
+
     embedding_function = SentenceTransformer(embedding_model, device=device)
 
-    # Step 2: Embed the question
+    # Step 2: Embed the question one at a time
     question_embedding = embedding_function.encode([question])[0]
 
     # Step 3: Retrieve top-k relevant documents from FAISS
