@@ -1,9 +1,7 @@
 import json
-import requests
 import torch
-from transformers import AutoModel, AutoTokenizer, AutoModelForSequenceClassification
+from transformers import AutoModel, AutoTokenizer
 import context_pruning
-from bs4 import BeautifulSoup
 
 # Load the model globally (avoid reloading in functions)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
