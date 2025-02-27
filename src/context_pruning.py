@@ -13,19 +13,26 @@ def similarity_check(query, retrieved_texts, retrieved_pmids,
     """
     Computes cosine similarity between a query and retrieved documents.
     Args:
-        query: query embedding
-        retrieved_texts: list of retrieved texts embeddings
+        query: query embedding (1D numpy array of shape (768,))
+        retrieved_texts: list of retrieved document embeddings (each should be 1D of shape (768,))
+        retrieved_pmids: list of corresponding PMIDs for retrieved documents
         context_sim_threshold (float): Percentile threshold for pruning.
         context_sim_min_threshold (float): Minimum similarity threshold.
 
     Returns:
-        pruned_contexts: list of most relevant document snippets
+        pruned_pmids: list of most relevant document PMIDs
     """
+    # Ensure query is 2D (1, 768)
+    query = np.array(query).reshape(1, -1)
+
+    # Ensure all retrieved document embeddings are 2D (N, 768)
+    retrieved_texts = np.array(retrieved_texts)
+
+    if len(retrieved_texts.shape) == 1:  # If single document was mistakenly 1D
+        retrieved_texts = retrieved_texts.reshape(1, -1)
+
     # Compute cosine similarity
-    similarities = [
-        cosine_similarity(np.array(query).reshape(1, -1), np.array(snippet_embedding).reshape(1, -1))[0][0]
-        for snippet_embedding in retrieved_texts
-    ]
+    similarities = cosine_similarity(query, retrieved_texts)[0]  # Shape: (N,)
 
     # Compute percentile-based threshold for filtering
     percentile_threshold = np.percentile(similarities, context_sim_threshold)
@@ -36,7 +43,7 @@ def similarity_check(query, retrieved_texts, retrieved_pmids,
         if similarities[i] > percentile_threshold and similarities[i] > context_sim_min_threshold
     ]
 
-    return pruned_pmids
+    return pruned_pmids, similarities, percentile_threshold
 
 
 def retrieve_and_prune_context(question, index, metadatas,
@@ -84,6 +91,7 @@ def retrieve_and_prune_context(question, index, metadatas,
         cosine_similarity(np.array(question_embedding).reshape(1, -1), np.array(snippet_embedding).reshape(1, -1))[0][0]
         for snippet_embedding in snippet_embeddings
     ]
+
 
     # Step 6: Compute percentile-based threshold for filtering
     percentile_threshold = np.percentile(similarities, context_sim_threshold)
