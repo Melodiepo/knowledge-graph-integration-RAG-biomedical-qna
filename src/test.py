@@ -124,8 +124,10 @@ def process_queries(input_file, output_file, pubmed_json_path):
                 continue
 
             # Perform context pruning
-            pruned_pmids = context_pruning.similarity_check(query_embedding, snippet_embeddings, retrieved_pmids)
+            pruned_pmids, similarities, threshold = context_pruning.similarity_check(query_embedding, snippet_embeddings, retrieved_pmids)
             logging.info(f"Pruned {len(pruned_pmids)} out of {len(retrieved_pmids)} PMIDs")
+            logging.info(f"Similarities: {similarities}")
+            logging.info(f"Threshold: {threshold}")
             if len(pruned_pmids) == 0:
                 none_flag += 1
                 logging.info(f"None flag: {none_flag}")

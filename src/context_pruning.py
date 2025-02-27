@@ -33,11 +33,9 @@ def similarity_check(query, retrieved_texts, retrieved_pmids,
 
     # Compute cosine similarity
     similarities = cosine_similarity(query, retrieved_texts)[0]  # Shape: (N,)
-    print(f"Similarities: {similarities}")
 
     # Compute percentile-based threshold for filtering
     percentile_threshold = np.percentile(similarities, context_sim_threshold)
-    print(f"Percentile threshold: {percentile_threshold}")
 
     # Select snippets above threshold
     pruned_pmids = [
@@ -45,7 +43,7 @@ def similarity_check(query, retrieved_texts, retrieved_pmids,
         if similarities[i] > percentile_threshold and similarities[i] > context_sim_min_threshold
     ]
 
-    return pruned_pmids
+    return pruned_pmids, similarities, percentile_threshold
 
 
 def retrieve_and_prune_context(question, index, metadatas,
