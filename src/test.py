@@ -60,7 +60,7 @@ def encode_query(query):
     try:
         inputs = tokenizer_query(query, return_tensors="pt", truncation=True, padding=True, max_length=512).to(DEVICE)
         with torch.no_grad():
-            output = model_query(**inputs).logits.cpu().numpy().flatten()
+            output = model_query(**inputs).last_hidden_state[:, 0, :].cpu().numpy().flatten()
         return output
     except Exception as e:
         logging.error(f"Error encoding query: {query}: {str(e)}")
@@ -72,7 +72,7 @@ def encode_texts(texts):
     try:
         inputs = tokenizer_article(texts, return_tensors="pt", truncation=True, padding=True, max_length=512).to(DEVICE)
         with torch.no_grad():
-            output = model_article(**inputs).logits.cpu().numpy()
+            output = model_article(**inputs).last_hidden_state[:, 0, :].cpu().numpy()
         return output
     except Exception as e:
         logging.error(f"Error encoding texts: {str(e)}")
@@ -97,25 +97,29 @@ def test_query_preprocess_instruction(input_file, output_file):
             query = entry["query"]
             retrieved = entry["retrieved"]
 
+            logging.info(f"Retrieved {len(retrieved)} documents for query")
             retrieved_pmids = [doc["pmid"] for doc in retrieved]
+            logging.info(f"Retrieved PMIDs: {retrieved_pmids}")
             retrieved_texts = [fetch_pubmed_abstract(pmid) for pmid in retrieved_pmids]
 
             if not retrieved_texts:
                 logging.warning(f"No retrieved texts for query: {query}")
                 continue
-
+            logging.info(f"Embedding {len(retrieved_texts)} retrieved texts...")
             query_embedding = encode_query(query)
             snippet_embeddings = encode_texts(retrieved_texts)
 
             if query_embedding is None or snippet_embeddings is None:
                 logging.warning(f"Skipping query due to encoding failure: {query}")
                 continue
+            logging.info(f"Calculating similarity for query")
 
             pruned_pmids = context_pruning.similarity_check(query_embedding, snippet_embeddings, retrieved_pmids)
             pruned_results.append({"query": query, "pruned_pmids": pruned_pmids})
+            logging.info(f"Pruned PMIDs: {pruned_pmids}")
 
             pbar.update(1)
-            logging.info(f"Processed query: {query}")
+            logging.info(f"Processed query")
 
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(pruned_results, f, indent=4)
