@@ -54,7 +54,7 @@ def filter_provence(query: str,
     # Load the Provence model (ensure that you have internet access or a cached version)
     provence = AutoModel.from_pretrained(model_name, trust_remote_code=True)
 
-    pruned_results = {}
+    pruned_results = []
     for pmid in pmids:
         doc_text = get_document_text(pmid, articles_data)
         if not doc_text:
@@ -64,9 +64,18 @@ def filter_provence(query: str,
         # Use Provence to prune the document context
         result = provence.process(query, doc_text, always_select_title=always_select_title, threshold=threshold)
         pruned_context = result.get("pruned_context", doc_text)
-        pruned_results[pmid] = pruned_context
+        pruned_score = result.get("reranking_score", 0)
+        pruned_results.append(
+            {
+            "pmid": pmid,
+            "pruned_context": pruned_context,
+            "score": pruned_score
+        }
+        )
 
-    return pruned_results
+    # Sort the results by score in descending order
+    sorted_results = sorted(pruned_results, key=lambda x: x["score"], reverse=True)
+    return sorted_results
 
 """
 if __name__ == "__main__":
@@ -88,7 +97,10 @@ if __name__ == "__main__":
     
     pruned_docs = filter_provence(example_query, example_pmids, articles_file_path)
     
-    # Output pruned contexts for each PMID
-    for pmid, context in pruned_docs.items():
-        print(f"PMID: {pmid}\nPruned Context: {context}\n{'-'*80}")
+    # Output the sorted pruned contexts for each PMID along with their score
+    for doc in pruned_docs:
+        print(f"PMID: {doc['pmid']}")
+        print(f"Reranking Score: {doc['score']}")
+        print(f"Pruned Context: {doc['pruned_context']}")
+        print("-" * 80)
 """
