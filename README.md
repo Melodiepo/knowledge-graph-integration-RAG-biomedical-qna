@@ -43,7 +43,7 @@
 4. **Run the pipeline**:
 
     ```bash
-    cd src
+    cd similarity_pruning
     python pipeline.py
     ```
     This script will:
