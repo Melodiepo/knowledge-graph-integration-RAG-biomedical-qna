@@ -51,8 +51,9 @@ def query_preprocess_instruction(input_path, use_spacy = True): #using spacy to 
 def query_encode(input_list):
     model = AutoModel.from_pretrained("ncbi/MedCPT-Query-Encoder")
     model.eval()
-    if torch.cuda.is_available():
-        model = model.to("cuda:7")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    
     tokenizer = AutoTokenizer.from_pretrained("ncbi/MedCPT-Query-Encoder")
 
     queries=[]
@@ -69,7 +70,6 @@ def query_encode(input_list):
 #                max_length=512,
                 max_length=512,
         )
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             encoded = {key: tensor.to(device) for key, tensor in encoded.items()}
             embeds = model(**encoded).last_hidden_state[:, 0, :]
             query_embeddings = embeds.detach().cpu().numpy()      

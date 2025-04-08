@@ -20,13 +20,26 @@ This script processes MCQ queries (e.g. MedQA) using precomputed embeddings from
 ### Output:
 - A JSON file (`output_path`) containing reranked evidences for each query. Each MCQ query will have a list of retrieved and reranked document texts that can be used as supporting evidence.
 
-### Usage Example:
-```bash
-python retriever.py -i input.json -o output.json -e embeddings -a articles -k 100
+### Usage Example (updated 3.11):
+
+python /cs/student/projects1/ml/2024/yihanli/retriever/main.py \
+-e /cs/student/projects1/ml/2024/yihanli/retriever/embeddings \
+-a /cs/student/projects1/ml/2024/yihanli/retriever/articles \
+-i /cs/student/projects1/ml/2024/yihanli/retriever/input/input_cot/medmcqa_cot.json \
+-c pubmed cpg textbook \
+-k 10 \
+-o /cs/student/projects1/ml/2024/yihanli/retriever/output/evidence_medmcqa_cot_test_k_10.json \
+-spc True
+
+### To do:
+Generate retriever output for 
++ k = 1/2/4/8/16/32  
++ each QA set's train/val/test respctively
++ both raw query and CoT
+
 ```
 
 """
-
 import os
 import json
 import torch
@@ -37,23 +50,25 @@ import spacy
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModel
 import numpy as np
+
 import query_encode as qe
 import retrieve as rt
 import rerank as rr
 
-
 def main():
     parser = argparse.ArgumentParser()
-
     parser.add_argument('-e', '--embeddings_dir', help='embeddings directory', default='embeddings')
     parser.add_argument('-a', '--articles_dir', help='articles directory', default='articles')
-    parser.add_argument('-i', '--input_path', help='input file path', default='/retriever/input/medqa/medqa_llama_cot.json')
-    parser.add_argument('-c', '--corpus', help='corpus to use', default=['cpg', 'textbook', 'pmc', 'pubmed'])
-    parser.add_argument('-k', '--top_k', help='number of retrieved documents', default=100, type=int)
-    parser.add_argument('-inst', '--instruction_preprocess', help='preprocess the query to retrieve documents for instruction(training) set', default='False')
-    parser.add_argument('-o', '--output_path', help='output file path', default='/retriever/output/medqa/evidence_medqa_llama_cot.json')
-    parser.add_argument('-spc', '--use_spacy', help='use scispacy to insert [SEP] token between sentences', default='False')
-    parser.add_argument('-pmdn', '--pubmed_group_num', help='number of chunks of pubmed to concatenate for each step', default=38, type=int)
+    parser.add_argument('-i', '--input_path', help='JSON file path for query input or CoT input', required=True)
+    parser.add_argument('-c', '--corpus', nargs='+', help='Which corpus to use', 
+                        default=['cpg', 'textbook', 'pubmed'])
+    parser.add_argument('-k', '--top_k', help='Number of retrieved documents', default=1, type=int)
+    parser.add_argument('-inst', '--instruction_preprocess', 
+                        help='Optionally preprocess the query for instruction set', 
+                        default='False')
+    parser.add_argument('-o', '--output_path', help='Output file path', required=True)
+    parser.add_argument('-spc', '--use_spacy', help='Use scispacy to insert [SEP] token', 
+                        default='False')
 
     args = parser.parse_args()
 
@@ -61,219 +76,157 @@ def main():
     articles_dir = args.articles_dir
     input_path = args.input_path
     output_path = args.output_path
-    corpus = args.corpus
+    corpora = set(args.corpus)
     top_k = args.top_k
-    inst = args.instruction_preprocess
-    use_spacy = args.use_spacy
-    pubmed_group_num = args.pubmed_group_num
+    inst = (args.instruction_preprocess == "True")
+    use_spacy = (args.use_spacy == "True")
 
-    if inst == True:
-        # query preprocess for instruction_set 
-        input_list = qe.query_preprocess_instruction(input_path, use_spacy = use_spacy)
+    # -------------------- 1) Load Queries/CoT -------------------- #
+    with open(input_path, 'r') as f:
+        input_data = json.load(f)
+
+    # Determine if the input is CoT or a normal query.
+    # We assume that CoT format has a key "model_output" in the first element.
+    is_cot = False
+    if isinstance(input_data, list) and len(input_data) > 0:
+        if "model_output" in input_data[0]:
+            is_cot = True
+    
+    # Prepare Query Text
+    if is_cot:
+        # For CoT input, we use the "model_output" as the query
+        queries = [entry["model_output"] for entry in input_data]
     else:
-        with open(input_path, 'r') as input_file:
-            input_list = [json.loads(line) for line in input_file if line.strip()]
-            #input_list = input_list[0:100]
-        questions = [entry["question"] for entry in input_list]
-        xq = qe.query_encode(questions)
+        # For normal query input, you can use an instruction preprocess if desired
+        if inst:
+            queries = qe.query_preprocess_instruction(input_path, use_spacy=use_spacy)
+        else:
+            queries = [entry["question"] for entry in input_data]
+            
+    # Encode the queries
+    xq = qe.query_encode(queries)
 
-    # pubmed mips
-    pubmed_I_array = []
-    for start_index in range(0, 38, pubmed_group_num):
-    #for start_index in range(0, 1, pubmed_group_num):
-        pubmed_index = rt.pubmed_index_create(pubmed_embeddings_dir=os.path.join(embeddings_dir, "pubmed"), start_index=start_index, pubmed_group_num=pubmed_group_num)
-        pubmed_I_array_temp = []
-        splits = [i for i in range(0, len(xq), 1024)]
+    # if inst == True:
+    #     # query preprocess for instruction_set 
+    #     input_list = qe.query_preprocess_instruction(input_path, use_spacy = use_spacy)
+    # else:
+    #     with open(input_path, 'r') as input_file:
+    #         input_list = json.load(input_file)
+    #     questions = [entry["question"] for entry in input_list]
+    #     xq = qe.query_encode(questions)
 
-        for split_start in tqdm(splits, desc=f"PubMed FAISS MIPS {start_index}:"):
-            D, I = pubmed_index.search(xq[split_start:split_start+1024], top_k)   
-            pubmed_I_array_temp.extend(I)
-        pubmed_I_array.append(pubmed_I_array_temp)
-        del pubmed_index
-    print(len(pubmed_I_array), "x", len(pubmed_I_array[0]))
-    # pubmed mips index save
-    # np.save("PubMed_I_array.npy", pubmed_I_array)
+    # -------------------- 3) Retrieve from corpora -------------------- #
+    pubmed_evidences = []
+    pmc_evidences = []
+    cpg_evidences = []
+    textbook_evidences = []
 
-    # pubmed decode
-    pubmed_evidences = rt.pubmed_decode(pubmed_I_array, pubmed_articles_dir= os.path.join(articles_dir, "pubmed"), pubmed_group_num=pubmed_group_num)
-    print(len(pubmed_evidences), "x", len(pubmed_evidences[0]))
+    # PubMed
+    if 'pubmed' in corpora:
+        pubmed_index = rt.pubmed_index_create(os.path.join(embeddings_dir, "pubmed"))
+        pubmed_I_array = []
+        batch_size = 1024
+        for start in tqdm(range(0, len(xq), batch_size), desc="PubMed FAISS MIPS"):
+            batch = xq[start : start + batch_size]
+            D, I = pubmed_index.search(batch, top_k)
+            pubmed_I_array.extend(I)
+        pubmed_evidences = rt.pubmed_decode(pubmed_I_array, os.path.join(articles_dir, "pubmed"))
 
-    
-    # pmc mips
-    pmc_index = rt.pmc_index_create(pmc_embeddings_dir = os.path.join(embeddings_dir, "pmc"))
-    pmc_I_array = []
+    # PMC
+    if 'pmc' in corpora and not inst:
+        pmc_index = rt.pmc_index_create(os.path.join(embeddings_dir, "pmc"))
+        pmc_I_array = []
+        batch_size = 1024
+        for start in tqdm(range(0, len(xq), batch_size), desc="PMC FAISS MIPS"):
+            batch = xq[start : start + batch_size]
+            D, I = pmc_index.search(batch, top_k)
+            pmc_I_array.extend(I)
+        del pmc_index
+        pmc_evidences = rt.pmc_decode(pmc_I_array, os.path.join(articles_dir, "pmc"))
 
-    for i in tqdm(splits, desc="PMC FAISS MIPS"):
-        D, I = pmc_index.search(xq[i:i+1024], top_k)   
-        pmc_I_array.extend(I)
-    del pmc_index
+    # CPG
+    if 'cpg' in corpora:
+        cpg_index = rt.cpg_index_create(os.path.join(embeddings_dir, "cpg"))
+        cpg_I_array = []
+        batch_size = 1024
+        for start in tqdm(range(0, len(xq), batch_size), desc="CPG FAISS MIPS"):
+            batch = xq[start : start + batch_size]
+            D, I = cpg_index.search(batch, top_k)
+            cpg_I_array.extend(I)
+        cpg_evidences = rt.cpg_decode(cpg_I_array, os.path.join(articles_dir, "cpg"))
 
-    # pmc mips index save
-    # np.save("PMC_I_array.npy", pmc_I_array)
+    # Textbook
+    if 'textbook' in corpora:
+        textbook_index = rt.textbook_index_create(os.path.join(embeddings_dir, "textbook"))
+        textbook_I_array = []
+        batch_size = 1024
+        for start in tqdm(range(0, len(xq), batch_size), desc="Textbook FAISS MIPS"):
+            batch = xq[start : start + batch_size]
+            D, I = textbook_index.search(batch, top_k)
+            textbook_I_array.extend(I)
+        textbook_evidences = rt.textbook_decode(textbook_I_array, os.path.join(articles_dir, "textbook"))
 
-    # decode pmc
-    pmc_evidences = rt.pmc_decode(pmc_I_array, pmc_articles_dir = os.path.join(articles_dir, "pmc"))
-
-
-    # cpg mips
-    cpg_index = rt.cpg_index_create(cpg_embeddings_dir = os.path.join(embeddings_dir, "cpg"))
-    cpg_I_array = []
-
-    for i in tqdm(splits, desc="CPG FAISS MIPS"):
-        D, I = cpg_index.search(xq[i:i+1024], top_k)   
-        cpg_I_array.extend(I)
-    del cpg_index
-
-    # cpg mips index save
-    # np.save("CPG_I_array.npy", cpg_I_array)
-
-    # decode cpg
-    cpg_evidences = rt.cpg_decode(cpg_I_array, cpg_articles_dir = os.path.join(articles_dir, "cpg"))
-
-
-    # textbook mips
-    textbook_index = rt.textbook_index_create(textbook_embeddings_dir = os.path.join(embeddings_dir, "textbook"))
-    textbook_I_array = []
-
-    for i in tqdm(splits, desc="textbook FAISS MIPS"):
-        D, I = textbook_index.search(xq[i:i+1024], top_k)   
-        textbook_I_array.extend(I)
-    del textbook_index
-
-    # textbook mips index save
-    #np.save("Textbook_I_array.npy", textbook_I_array)
-
-    # decode textbook
-    textbook_evidences = rt.textbook_decode(textbook_I_array, textbook_articles_dir = os.path.join(articles_dir, "textbook"))
-    
-    # rerank evidences from 4 corpora
-    query_evidences, evidences = rr.combine_query_evidence(input_list, pubmed_evidences, pmc_evidences, cpg_evidences, textbook_evidences)
-    #query_evidences, evidences = rr.combine_query_evidence(input_list, pubmed_evidences)
-
-    # Filter out empty or mismatched entries
-    valid_data = [(q, e) for q, e in zip(query_evidences, evidences) if len(e) == top_k]
-
-    # Unpack valid data
-    query_evidences, evidences = zip(*valid_data)
-
-    print(f"Filtered queries: {len(query_evidences)}")
-    print(f"Filtered evidences: {len(evidences)}")
-
-    # save output of 10 reranked evidences
-    reranked_evidences = rr.rerank(query_evidences, evidences, top_k)
-#    with open (input_path, 'r') as jsfile:
-#        input_file = json.load(jsfile)
-
-
-#    with open (output_path, 'w') as jsfile:
-#        json.dump(reranked_evidences, jsfile) 
-
-    # Combine queries and reranked evidences into a structured format
-    formatted_reranked_evidences = [
-        {
-            "query": query_evidences[i][0][0],  # Extract the original query
-            "retrieved_docs": reranked_evidences[i]  # List of top-ranked evidence IDs
-        }
-        for i in range(len(reranked_evidences))
-    ]
-
-    # Save in the expected format
-    with open(output_path, 'w') as jsfile:
-        json.dump(formatted_reranked_evidences, jsfile, indent=4)
-
-    #with open (output_path, 'w') as jsfile:
-        #json.dump(reranked_evidences, jsfile) 
-
-if __name__ == "__main__":
-    main()
-
-
-
-'''
-
-def main():
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument('-e', '--embeddings_dir', help='embeddings directory', default='embeddings')
-    parser.add_argument('-a', '--articles_dir', help='articles directory', default='articles')
-    parser.add_argument('-i', '--input_path', help='input file path', default='/retriever/input/medqa/medqa_llama_cot.json')
-    parser.add_argument('-k', '--top_k', help='number of retrieved documents', default=100, type=int)
-    parser.add_argument('-o', '--output_path', help='output file path', default='/retriever/output/medqa/evidence_medqa_llama_cot.json')
-    parser.add_argument('-pmdn', '--pubmed_group_num', help='number of chunks of pubmed to concatenate for each step', default=38, type=int)
-
-    args = parser.parse_args()
-
-    embeddings_dir = args.embeddings_dir
-    articles_dir = args.articles_dir
-    input_path = args.input_path
-    output_path = args.output_path
-    top_k = args.top_k
-    pubmed_group_num = args.pubmed_group_num
-
-    # Load queries from input
-    with open(input_path, 'r') as input_file:
-        input_list = [json.loads(line) for line in input_file if line.strip()]
-        input_list = input_list[0:100]  # Use a subset for faster testing
-
-    # Extract and encode questions
-    questions = [entry.get("question", "") for entry in input_list]
-    print(f"Extracted {len(questions)} questions.")
-    xq = qe.query_encode(questions)
-
-    # Retrieve evidence from PubMed
-    pubmed_I_array = []
-    for start_index in range(0, 1, pubmed_group_num):  # Only process one chunk
-        pubmed_index = rt.pubmed_index_create(
-            pubmed_embeddings_dir=os.path.join(embeddings_dir, "pubmed"),
-            start_index=start_index,
-            pubmed_group_num=pubmed_group_num
-        )
-        pubmed_I_array_temp = []
-        splits = [i for i in range(0, len(xq), 1024)]
-
-        for split_start in tqdm(splits, desc=f"PubMed FAISS MIPS {start_index}:"):
-            D, I = pubmed_index.search(xq[split_start:split_start+1024], top_k)
-            pubmed_I_array_temp.extend(I)
-
-        pubmed_I_array.append(pubmed_I_array_temp)
-        del pubmed_index
-    print(f"{len(pubmed_I_array)} x {len(pubmed_I_array[0])} evidence indices retrieved.")
-
-    # Decode PubMed evidence
-    pubmed_evidences = rt.pubmed_decode(
-        pubmed_I_array,
-        pubmed_articles_dir=os.path.join(articles_dir, "pubmed"),
-        pubmed_group_num=pubmed_group_num
+    # -------------------- 4) Rerank & Save -------------------- #
+    query_evidences, evidences = rr.combine_query_evidence(
+        input_data,
+        pubmed_evidences,
+        cpg_evidences,
+        textbook_evidences,
+        pmc_evidences,
+        []
     )
-    print(f"Decoded evidences: {len(pubmed_evidences)} x {len(pubmed_evidences[0])}")
 
-    # Combine queries with their corresponding evidences
-    query_evidences, evidences = rr.combine_query_evidence(questions, pubmed_evidences)
+    reranked_evidences, confidence_scores = rr.rerank(query_evidences, evidences, top_k)
+    
+    final_output = []
+    for query_obj, retrieved_ids, scores in zip(input_data, reranked_evidences, confidence_scores):
+        # Only extract the "question" field from the query object.
+        if is_cot:
+            q_text = query_obj.get("model_output", query_obj.get("question", ""))
+        else:
+            q_text = query_obj.get("question", "")
+        entry = {"query": q_text, "retrieved": []}
+        for obj, score in zip(retrieved_ids, scores):
+            # Check if it is a PubMed hit (has a pmid or if it is a string of digits)
+            if isinstance(obj, dict) and obj.get("pmid") is not None:
+                # Add the chunk index from the article
+                entry["retrieved"].append({
+                    "pmid": str(obj["pmid"]),
+                    "chunk_index": obj.get("chunk_index", "unknown"),
+                    "abstract": obj.get("abstract", ""), 
+                    "confidence": float(score)
+                })
+            elif isinstance(obj, str) and obj.isdigit():
+                entry["retrieved"].append({
+                    "pmid": obj,
+                    "chunk_index": "unknown",  # if you don’t have the chunk info for string hits
+                    "confidence": float(score)
+                })
+            else:
+                # For non-PubMed hits (CPG/Textbook)
+                if isinstance(obj, dict):
+                    snippet = (
+                        obj.get("text") or
+                        obj.get("content") or
+                        obj.get("abstract") or
+                        str(obj)
+                    )
+                    corpus = obj.get("corpus", "unknown")
+                else:
+                    snippet = str(obj)
+                    corpus = "Unknown"
+                # Later we add the corpus information (see next update)
+                entry["retrieved"].append({
+                    "text": snippet,
+                    "corpus": corpus,
+                    "confidence": float(score)
+                })
+        final_output.append(entry)
 
-    # Filter valid entries
-    valid_data = [(q, e) for q, e in zip(query_evidences, evidences) if len(q) > 0 and len(e) == top_k]
-    query_evidences, evidences = zip(*valid_data) if valid_data else ([], [])
-
-    print(f"Filtered queries: {len(query_evidences)}")
-    print(f"Filtered evidences: {len(evidences)}")
-
-    # Rerank and save the output
-    reranked_evidences = rr.rerank(query_evidences, evidences, top_k)
-
-    # Combine queries and reranked evidences into a structured format
-    formatted_reranked_evidences = [
-        {
-            "query": query_evidences[i][0][0],  # Extract the original query
-            "retrieved_docs": reranked_evidences[i]  # List of top-ranked evidence IDs
-        }
-        for i in range(len(reranked_evidences))
-    ]
-
-    # Save in the expected format
     with open(output_path, 'w') as jsfile:
-        json.dump(formatted_reranked_evidences, jsfile, indent=4)
+        json.dump(final_output, jsfile, indent=2)
+    print(f"\n✅ Reranked evidences saved to {output_path}")
 
 
 if __name__ == "__main__":
     main()
-'''
